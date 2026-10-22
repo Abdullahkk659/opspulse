@@ -35,7 +35,13 @@
   .brand { display:flex; align-items:baseline; gap:10px; margin-bottom:4px; }
   .brand-mark { width:11px; height:11px; border-radius:50%; background:var(--st-resolved); box-shadow:0 0 0 4px rgba(70,200,138,.15); position:relative; top:-1px; }
   .brand-name { font-size:26px; font-weight:700; letter-spacing:-0.02em; }
-  .login-sub { color:var(--text-dim); margin:0 0 32px 21px; font-size:14px; }
+  .login-sub { color:var(--text-dim); margin:0 0 24px 21px; font-size:14px; }
+  .demo-note {
+    margin:0 0 24px; padding:10px 13px; font-size:12.5px; line-height:1.5;
+    color:var(--text-dim); background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--radius);
+  }
+  .demo-note b { color:var(--text); font-weight:600; }
   .field { margin-bottom:16px; }
   .field label { display:block; font-size:13px; font-weight:500; color:var(--text-dim); margin-bottom:7px; }
   .field input {
@@ -94,6 +100,20 @@
   .compose textarea:focus, .compose input:focus, .compose select:focus {
     outline:none; border-color:var(--accent); box-shadow:0 0 0 3px rgba(75,159,255,.15);
   }
+  .demo-controls { margin-top:18px; padding-top:18px; border-top:1px dashed var(--line); }
+  .demo-controls .panel-title { margin-bottom:12px; }
+  .btn-sim {
+    width:100%; padding:11px; background:var(--surface-2); color:var(--text);
+    border:1px solid var(--line); border-radius:var(--radius); font-size:14px; font-weight:600;
+    transition:border-color .15s, color .15s;
+  }
+  .btn-sim:hover { border-color:var(--accent); color:var(--accent); }
+  .auto-row {
+    display:flex; align-items:center; gap:9px; margin-top:12px;
+    font-size:13px; color:var(--text-dim); cursor:pointer; user-select:none;
+  }
+  .auto-row input { width:auto; }
+  .demo-hint { font-size:12px; color:var(--text-faint); margin:9px 0 0; line-height:1.5; }
 
   .feed { padding:22px 26px; min-width:0; }
   .feed-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
@@ -171,6 +191,10 @@
   <div class="login-card">
     <div class="brand"><span class="brand-mark"></span><span class="brand-name">OpsPulse</span></div>
     <p class="login-sub">Sign in to your operations command center.</p>
+    <div class="demo-note">
+      <b>Live demo.</b> Credentials are pre-filled — just hit <b>Sign in</b>. Inside, use
+      <b>Simulate incident</b> or <b>Auto-demo</b> to watch incidents stream in and escalate in real time.
+    </div>
     <div class="field">
       <label for="email">Email</label>
       <input id="email" type="email" value="admin@acme.com" autocomplete="username" />
@@ -219,6 +243,16 @@
       </div>
       <button id="create-btn" class="btn-primary">Log event</button>
       <div id="create-error" class="form-error"></div>
+
+      <div class="demo-controls">
+        <h3 class="panel-title">Demo controls</h3>
+        <button id="simulate-btn" class="btn-sim">⚡ Simulate incident</button>
+        <label class="auto-row">
+          <input type="checkbox" id="auto-demo" />
+          Auto-demo — new incident every 18s
+        </label>
+        <p class="demo-hint">Each one is a real incident: it hits the API, is stored per-tenant, and streams to every open window live. Open this page in two tabs to see it.</p>
+      </div>
     </aside>
 
     <main class="feed">
@@ -234,16 +268,34 @@
 <div id="toast" class="toast"></div>
 
 <script>
-  const API = "http://localhost:9090";
+  const API = "";
   let token = null;
   let tenantId = null;
   let incidents = [];
   let stompClient = null;
+  let autoDemoTimer = null;
 
   const loginView  = document.getElementById("login-view");
   const appView    = document.getElementById("app-view");
   const loginBtn   = document.getElementById("login-btn");
   const loginError = document.getElementById("login-error");
+
+  // Sample incidents for the demo controls — logistics / retail field-ops themed.
+  const SAMPLE_INCIDENTS = [
+    { title: "Freight delayed at Lahore dry port", description: "Container held in customs — roughly a 6-hour delay on the Karachi route.", severity: "HIGH" },
+    { title: "Stock mismatch — Warehouse B", description: "Physical count is 240 units under system for SKU #4471.", severity: "MEDIUM" },
+    { title: "Cold-chain unit offline", description: "Reefer truck RT-12 lost temperature telemetry 20 minutes ago.", severity: "CRITICAL" },
+    { title: "POS terminals down — Gulberg branch", description: "Card payments failing; cash only for the last 15 minutes.", severity: "HIGH" },
+    { title: "Delivery SLA breach risk", description: "Route 7 is running 90 minutes behind; 12 orders at risk.", severity: "MEDIUM" },
+    { title: "Inventory sync lag", description: "ERP → storefront sync delayed; online stock may be stale.", severity: "LOW" },
+    { title: "Supplier shipment short", description: "Received 18 of 25 pallets from the vendor; 7 missing.", severity: "MEDIUM" },
+    { title: "Fuel card declined — fleet", description: "Two drivers reporting declined fuel cards this morning.", severity: "LOW" },
+    { title: "Checkout API latency spike", description: "p95 checkout latency jumped to 4.2s across all stores.", severity: "CRITICAL" },
+    { title: "Returns backlog growing", description: "Returns desk at Clifton branch backed up ~3 hours.", severity: "LOW" },
+  ];
+  function randomIncident() {
+    return SAMPLE_INCIDENTS[Math.floor(Math.random() * SAMPLE_INCIDENTS.length)];
+  }
 
   function authHeaders(extra = {}) { return { "Authorization": "Bearer " + token, ...extra }; }
   function toast(msg) {
@@ -300,8 +352,9 @@
       appView.style.display = "flex";
       await loadIncidents();
       connectWebSocket();
+      seedIfEmpty();
     } catch (e) {
-      loginError.textContent = "Can't reach the server. Is OpsPulse running on :9090?";
+      loginError.textContent = "Can't reach the server. Please try again in a moment.";
     } finally {
       loginBtn.disabled = false; loginBtn.textContent = "Sign in";
     }
@@ -314,6 +367,16 @@
       incidents = await res.json();
       render();
     } catch { toast("Can't reach the server."); }
+  }
+
+  // Posts a realistic incident through the real API so the board is never empty on first load.
+  async function seedIfEmpty() {
+    if (incidents.length > 0) return;
+    const picks = [...SAMPLE_INCIDENTS].sort(() => Math.random() - 0.5).slice(0, 3);
+    for (const inc of picks) {
+      await postIncident(inc);
+      await new Promise(r => setTimeout(r, 500));
+    }
   }
 
   function connectWebSocket() {
@@ -355,7 +418,7 @@
         <div class="empty">
           <div class="empty-mark"></div>
           <h3>No active events</h3>
-          <p>When your team logs a field event, it shows up here — live.</p>
+          <p>Hit “Simulate incident” on the left to watch one stream in — live.</p>
         </div>`;
       return;
     }
@@ -406,6 +469,16 @@
     });
   }
 
+  // Shared POST used by the compose form, the seed, and the simulator.
+  async function postIncident(payload) {
+    const res = await fetch(API + "/api/incidents", {
+      method:"POST", headers: authHeaders({ "Content-Type":"application/json" }),
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error("create failed " + res.status);
+    // The feed updates via the WebSocket broadcast (so every open window updates together).
+  }
+
   async function createIncident() {
     const title = document.getElementById("c-title").value.trim();
     const description = document.getElementById("c-desc").value.trim();
@@ -414,16 +487,29 @@
     err.textContent = "";
     if (!title) { err.textContent = "Give the event a title."; return; }
     try {
-      const res = await fetch(API + "/api/incidents", {
-        method:"POST", headers: authHeaders({ "Content-Type":"application/json" }),
-        body: JSON.stringify({ title, description, severity }),
-      });
-      if (!res.ok) { err.textContent = "Couldn't log the event (" + res.status + ")."; return; }
-      // The feed updates via the WebSocket broadcast (so every open window updates together).
+      await postIncident({ title, description, severity });
       document.getElementById("c-title").value = "";
       document.getElementById("c-desc").value = "";
       toast("Event logged");
     } catch { err.textContent = "Can't reach the server."; }
+  }
+
+  // Demo: fire a random realistic incident through the real pipeline.
+  async function simulateIncident() {
+    try {
+      await postIncident(randomIncident());
+      toast("Incident simulated");
+    } catch { toast("Can't reach the server."); }
+  }
+
+  function toggleAutoDemo(on) {
+    if (on) {
+      simulateIncident();
+      autoDemoTimer = setInterval(simulateIncident, 18000);
+    } else if (autoDemoTimer) {
+      clearInterval(autoDemoTimer);
+      autoDemoTimer = null;
+    }
   }
 
   async function updateStatus(id, status) {
@@ -448,6 +534,9 @@
   }
 
   function logout() {
+    if (autoDemoTimer) { clearInterval(autoDemoTimer); autoDemoTimer = null; }
+    const auto = document.getElementById("auto-demo");
+    if (auto) auto.checked = false;
     if (stompClient) { try { stompClient.disconnect(); } catch {} stompClient = null; }
     token = null; tenantId = null; incidents = [];
     setLive(false);
@@ -458,6 +547,8 @@
   loginBtn.addEventListener("click", login);
   document.getElementById("password").addEventListener("keydown", e => { if (e.key === "Enter") login(); });
   document.getElementById("create-btn").addEventListener("click", createIncident);
+  document.getElementById("simulate-btn").addEventListener("click", simulateIncident);
+  document.getElementById("auto-demo").addEventListener("change", e => toggleAutoDemo(e.target.checked));
   document.getElementById("logout-btn").addEventListener("click", logout);
 </script>
 </body>
